@@ -1,0 +1,7 @@
+{
+  "name": "rentacar-movil",
+  "integrations": {
+    "capacitor": {}
+  },
+  "type": "vue-vite"
+}
