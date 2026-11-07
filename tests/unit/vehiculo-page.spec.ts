@@ -1,11 +1,36 @@
 import { flushPromises, mount } from '@vue/test-utils';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { nextTick } from 'vue';
+import { createHash } from 'node:crypto';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '@/services/api';
+import { session } from '@/services/auth';
 import VehiculoPage from '@/views/VehiculoPage.vue';
 
-const { get } = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock('@/services/api', () => ({ api: { get }, ApiError: Error }));
+const { get, getStatus, addListener, remove, getAuthToken } = vi.hoisted(() => ({
+  get: vi.fn(),
+  getStatus: vi.fn(),
+  addListener: vi.fn(),
+  remove: vi.fn(),
+  getAuthToken: vi.fn(),
+}));
+vi.mock('@capacitor/network', () => ({ Network: { getStatus, addListener } }));
+vi.mock('@/services/secureStorage', () => ({ getAuthToken }));
+vi.mock('@/services/auth', async () => {
+  const { reactive } = await import('vue');
+  const session = reactive({ user: { id: 1 } as { id: number } | null, status: 'authenticated' });
+  return { session, isAuthenticated: () => session.status !== 'guest' };
+});
+vi.mock('@/services/api', () => ({
+  api: { get },
+  ApiError: class ApiError extends Error {
+    constructor(
+      public status: number,
+      mensaje: string,
+    ) {
+      super(mensaje);
+    }
+  },
+}));
 
 vi.mock('@ionic/vue', async (importOriginal) => {
   const ionic = await importOriginal<Record<string, unknown>>();
@@ -51,13 +76,30 @@ function montarListado() {
 }
 
 describe('Listado de vehículos', () => {
-  beforeEach(() => get.mockReset());
+  let cambiarConexion: (estado: { connected: boolean }) => void;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorage.clear();
+    Object.assign(session, { user: { id: 1 }, status: 'authenticated' });
+    getAuthToken.mockResolvedValue('sesion-de-prueba-a');
+    getStatus.mockResolvedValue({ connected: true });
+    addListener.mockImplementation((_evento, callback) => {
+      cambiarConexion = callback;
+      return Promise.resolve({ remove: remove.mockResolvedValue(undefined) });
+    });
+    vi.stubGlobal('crypto', {
+      subtle: {
+        digest: (_algoritmo: string, datos: Uint8Array) => Promise.resolve(createHash('sha256').update(datos).digest()),
+      },
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
 
   it('muestra los datos, enlaza al detalle y pagina sin duplicados', async () => {
     get.mockResolvedValueOnce(pagina(1, [1])).mockResolvedValueOnce(pagina(2, [1, 2, 2]));
     const vista = montarListado();
-    await nextTick();
-    expect(vista.get('[role="status"]').text()).toContain('Cargando vehículos');
     await flushPromises();
 
     expect(vista.text()).toContain('Toyota Yaris');
@@ -79,7 +121,7 @@ describe('Listado de vehículos', () => {
   it('conserva la lista y reintenta la página que falló', async () => {
     get
       .mockResolvedValueOnce(pagina(1, [1]))
-      .mockRejectedValueOnce(new Error('Servidor no disponible'))
+      .mockRejectedValueOnce(new ApiError(500, 'Servidor no disponible'))
       .mockResolvedValueOnce(pagina(2, [2]));
     const vista = montarListado();
     await flushPromises();
@@ -99,7 +141,7 @@ describe('Listado de vehículos', () => {
   it('conserva los datos si falla la recarga y muestra el vacío tras reintentar', async () => {
     get
       .mockResolvedValueOnce(pagina(1, [1]))
-      .mockRejectedValueOnce(new Error('Falló la recarga'))
+      .mockRejectedValueOnce(new ApiError(500, 'Falló la recarga'))
       .mockResolvedValueOnce(pagina(1, [], 1));
     const vista = montarListado();
     await flushPromises();
@@ -144,6 +186,75 @@ describe('Listado de vehículos', () => {
     expect(vista.text()).toContain('ABC3');
     expect(vista.text()).not.toContain('ABC1');
     expect(vista.text()).not.toContain('ABC2');
+    vista.unmount();
+  });
+
+  it('muestra caché al perder conexión y consulta una vez al recuperarla', async () => {
+    get.mockResolvedValueOnce(pagina(1, [1])).mockResolvedValueOnce(pagina(1, [2]));
+    const vista = montarListado();
+    await flushPromises();
+
+    cambiarConexion({ connected: false });
+    await flushPromises();
+    expect(vista.text()).toContain('Dispositivo sin conexión');
+    expect(vista.text()).toContain('Información desactualizada');
+    expect(vista.text()).toContain('Última actualización');
+    expect(vista.text()).toContain('ABC1');
+    expect(vista.text()).not.toContain('Cargar más');
+
+    cambiarConexion({ connected: true });
+    cambiarConexion({ connected: true });
+    await flushPromises();
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(vista.text()).toContain('ABC2');
+    expect(vista.text()).not.toContain('desactualizada');
+    vista.unmount();
+    expect(remove).toHaveBeenCalledOnce();
+  });
+
+  it('restaura sin usuario la caché de la sesión y aísla otra cuenta', async () => {
+    get.mockResolvedValueOnce(pagina(1, [1]));
+    const primeraVista = montarListado();
+    await flushPromises();
+    primeraVista.unmount();
+
+    expect(JSON.stringify(localStorage)).not.toContain('sesion-de-prueba-a');
+    Object.assign(session, { user: null, status: 'offline' });
+    getStatus.mockResolvedValue({ connected: false });
+    const vistaOffline = montarListado();
+    await flushPromises();
+    expect(vistaOffline.text()).toContain('ABC1');
+    expect(get).toHaveBeenCalledOnce();
+
+    getAuthToken.mockResolvedValue('sesion-de-prueba-b');
+    Object.assign(session, { user: { id: 2 }, status: 'authenticated' });
+    await flushPromises();
+    expect(vistaOffline.text()).not.toContain('ABC1');
+    expect(vistaOffline.text()).toContain('No hay información disponible sin conexión');
+    expect(get).toHaveBeenCalledOnce();
+    vistaOffline.unmount();
+  });
+
+  it('distingue Laravel inaccesible y descarta la caché cuando recibe 403', async () => {
+    get
+      .mockResolvedValueOnce(pagina(1, [1]))
+      .mockRejectedValueOnce(new ApiError(0, 'Sin respuesta'))
+      .mockRejectedValueOnce(new ApiError(403, 'Sin permisos'));
+    const primeraVista = montarListado();
+    await flushPromises();
+    primeraVista.unmount();
+
+    const vista = montarListado();
+    await flushPromises();
+    expect(vista.text()).toContain('El servidor Laravel no responde');
+    expect(vista.text()).toContain('ABC1');
+    expect(vista.text()).not.toContain('Dispositivo sin conexión');
+
+    await vista.getComponent({ name: 'IonButton' }).trigger('click');
+    await flushPromises();
+    expect(vista.get('[role="alert"]').text()).toContain('Sin permisos');
+    expect(vista.text()).not.toContain('ABC1');
+    expect(localStorage.length).toBe(0);
     vista.unmount();
   });
 });

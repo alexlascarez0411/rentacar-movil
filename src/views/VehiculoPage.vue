@@ -18,6 +18,15 @@
       </div>
       <p v-else-if="paginaActual && !vehiculos.length">No hay vehículos disponibles.</p>
 
+      <div v-if="motivoOffline" role="status">
+        <p>{{ motivoOffline }}</p>
+        <p v-if="actualizadoEn !== null">
+          Información desactualizada. Última actualización: {{ formatoFecha.format(actualizadoEn) }}.
+        </p>
+        <p v-else>No hay información disponible sin conexión.</p>
+        <ion-button v-if="conectado !== false && !cargando" @click="cargarPagina(1)"> Reintentar </ion-button>
+      </div>
+
       <ion-list v-if="vehiculos.length">
         <ion-item v-for="vehiculo in vehiculos" :key="vehiculo.id" :router-link="`/vehiculos/${vehiculo.id}`" detail>
           <ion-label class="ion-text-wrap">
@@ -30,7 +39,7 @@
       </ion-list>
 
       <ion-button
-        v-if="paginaActual < ultimaPagina && !fallo"
+        v-if="paginaActual < ultimaPagina && !fallo && !motivoOffline"
         expand="block"
         :disabled="cargando"
         @click="cargarPagina(paginaActual + 1)"
@@ -59,24 +68,19 @@ import {
   onIonViewWillLeave,
 } from '@ionic/vue';
 import type { RefresherCustomEvent } from '@ionic/vue';
-import { onBeforeUnmount, ref } from 'vue';
+import { onBeforeUnmount, ref, watch } from 'vue';
 
 import { api, ApiError } from '@/services/api';
 
-interface VehiculoListado {
-  id: number;
-  placa: string;
-  marca: string;
-  modelo: string;
-  anno: number;
-  precio_diario: number;
-  estado: string | null;
-}
-
-interface PaginaVehiculos {
-  data: VehiculoListado[];
-  meta: { current_page: number; last_page: number; total: number };
-}
+import { useNetwork } from '@/composables/useNetwork';
+import { isAuthenticated, session } from '@/services/auth';
+import {
+  eliminarCacheVehiculos,
+  guardarCacheVehiculos,
+  leerCacheVehiculos,
+  obtenerClaveCacheVehiculos,
+} from '@/services/cacheVehiculos';
+import type { CacheVehiculos, PaginaVehiculos, VehiculoListado } from '@/services/cacheVehiculos';
 
 const vehiculos = ref<VehiculoListado[]>([]);
 const paginaActual = ref(0);
@@ -84,6 +88,12 @@ const ultimaPagina = ref(0);
 const cargando = ref(false);
 const fallo = ref<{ pagina: number; mensaje: string } | null>(null);
 const formatoPrecio = new Intl.NumberFormat('es-CR', { style: 'currency', currency: 'CRC' });
+const formatoFecha = new Intl.DateTimeFormat('es-CR', { dateStyle: 'medium', timeStyle: 'short' });
+const actualizadoEn = ref<number | null>(null);
+const motivoOffline = ref('');
+const conectado = ref<boolean>();
+let visible = false;
+let claveMostrada: string | null = null;
 let solicitudActiva: AbortController | undefined;
 
 function cancelarSolicitud() {
@@ -92,29 +102,94 @@ function cancelarSolicitud() {
   cargando.value = false;
 }
 
+function limpiarListado() {
+  vehiculos.value = [];
+  paginaActual.value = 0;
+  ultimaPagina.value = 0;
+  actualizadoEn.value = null;
+  motivoOffline.value = '';
+  fallo.value = null;
+  claveMostrada = null;
+}
+
+function mostrarListado(cache: CacheVehiculos, clave: string | null) {
+  vehiculos.value = cache.data;
+  paginaActual.value = cache.meta.current_page;
+  ultimaPagina.value = cache.meta.last_page;
+  actualizadoEn.value = cache.actualizadoEn;
+  claveMostrada = clave;
+}
+
+function mostrarSinServidor(clave: string | null) {
+  const cache = leerCacheVehiculos(clave);
+  if (cache && (actualizadoEn.value === null || cache.actualizadoEn > actualizadoEn.value)) {
+    mostrarListado(cache, clave);
+  }
+  motivoOffline.value = conectado.value === false ? 'Dispositivo sin conexión.' : 'El servidor Laravel no responde.';
+}
+
 async function cargarPagina(pagina: number) {
-  if (solicitudActiva && pagina !== 1) return;
+  if (!visible || (solicitudActiva && pagina !== 1)) return;
+  if (!isAuthenticated()) {
+    cancelarSolicitud();
+    limpiarListado();
+    return;
+  }
 
   solicitudActiva?.abort();
   const solicitud = new AbortController();
   solicitudActiva = solicitud;
   cargando.value = true;
   fallo.value = null;
+  const vigente = () => solicitudActiva === solicitud && isAuthenticated();
 
+  let clave: string | null = null;
   try {
+    clave = await obtenerClaveCacheVehiculos();
+    if (!vigente()) return;
+    if (clave !== claveMostrada) {
+      limpiarListado();
+      pagina = 1;
+    }
+    if (conectado.value === false) {
+      mostrarSinServidor(clave);
+      return;
+    }
+
     const { data, meta } = await api.get<PaginaVehiculos>(`/vehiculos?page=${pagina}&limit=10`, {
       signal: solicitud.signal,
     });
-    if (solicitudActiva !== solicitud) return;
+    if (!vigente()) return;
+
+    if (clave !== null) {
+      const claveActual = await obtenerClaveCacheVehiculos();
+      if (!vigente()) return;
+      if (claveActual !== clave) {
+        limpiarListado();
+        return;
+      }
+    }
 
     const acumulados = new Map(pagina === 1 ? [] : vehiculos.value.map((vehiculo) => [vehiculo.id, vehiculo] as const));
     for (const vehiculo of data) acumulados.set(vehiculo.id, vehiculo);
 
-    paginaActual.value = meta.current_page;
-    ultimaPagina.value = meta.last_page;
-    vehiculos.value = [...acumulados.values()];
+    const cache = { data: [...acumulados.values()], meta, actualizadoEn: Date.now() };
+    mostrarListado(cache, clave);
+    motivoOffline.value = '';
+    guardarCacheVehiculos(clave, cache);
   } catch (error) {
-    if (solicitudActiva !== solicitud) return;
+    if (!vigente()) return;
+    if (error instanceof ApiError) {
+      if (error.status === 0) {
+        mostrarSinServidor(clave);
+        return;
+      }
+      if (error.status === 401 || error.status === 403) {
+        eliminarCacheVehiculos(clave);
+        limpiarListado();
+        pagina = 1;
+      }
+    }
     fallo.value = {
       pagina,
       mensaje: error instanceof ApiError ? error.message : 'No se pudieron cargar los vehículos.',
@@ -135,9 +210,32 @@ async function recargar(evento: RefresherCustomEvent) {
   }
 }
 
-onIonViewWillEnter(() => {
-  if (!paginaActual.value) void cargarPagina(1);
+const red = useNetwork((estado) => {
+  conectado.value = estado;
+  void cargarPagina(1);
 });
-onIonViewWillLeave(cancelarSolicitud);
-onBeforeUnmount(cancelarSolicitud);
+
+watch(
+  [() => session.user?.id, () => session.status === 'guest' || session.status === 'checking'],
+  () => {
+    cancelarSolicitud();
+    limpiarListado();
+    if (visible) void cargarPagina(1);
+  },
+  { flush: 'sync' },
+);
+
+onIonViewWillEnter(() => {
+  visible = true;
+  void red.iniciar();
+});
+
+function salir() {
+  visible = false;
+  red.detener();
+  cancelarSolicitud();
+}
+
+onIonViewWillLeave(salir);
+onBeforeUnmount(salir);
 </script>
