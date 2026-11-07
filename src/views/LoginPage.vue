@@ -4,7 +4,7 @@
 
         <ion-header>
             <ion-toolbar>
-                <ion-title>RentaCar - Iniciar sesión</ion-title>
+                <ion-title>RentaCAR</ion-title>
             </ion-toolbar>
         </ion-header>
 
@@ -15,13 +15,15 @@
                 <ion-card>
 
                     <ion-card-header>
+
                         <ion-card-title>
-                            Bienvenido
+                            Iniciar sesión
                         </ion-card-title>
 
                         <ion-card-subtitle>
-                            Ingresa tus credenciales para continuar.
+                            Ingresa con tu cuenta de RentaCAR.
                         </ion-card-subtitle>
+
                     </ion-card-header>
 
                     <ion-card-content>
@@ -31,21 +33,21 @@
                             @submit.prevent="handleLogin"
                         >
 
-                            <!-- Usuario o correo -->
+                            <!-- Correo electrónico -->
                             <ion-input
-                                v-model="identifier"
-                                :label="identifierLabel"
+                                v-model="email"
+                                label="Correo electrónico"
                                 label-placement="stacked"
-                                :type="identifierType"
+                                type="email"
+                                inputmode="email"
                                 autocomplete="username"
                                 autocapitalize="off"
                                 fill="outline"
                                 :disabled="loading"
-                                :error-text="identifierError"
+                                :error-text="emailError"
                                 :class="{
-                                    'ion-invalid ion-touched': identifierError
+                                    'ion-invalid ion-touched': !!emailError
                                 }"
-                                required
                                 class="input-field"
                             />
 
@@ -60,13 +62,12 @@
                                 :disabled="loading"
                                 :error-text="passwordError"
                                 :class="{
-                                    'ion-invalid ion-touched': passwordError
+                                    'ion-invalid ion-touched': !!passwordError
                                 }"
-                                required
                                 class="input-field"
                             />
 
-                            <!-- Mensaje de error -->
+                            <!-- Mensajes de error -->
                             <ion-text
                                 v-if="errorMessage"
                                 color="danger"
@@ -75,7 +76,7 @@
                                 <p>{{ errorMessage }}</p>
                             </ion-text>
 
-                            <!-- Botón de ingreso -->
+                            <!-- Botón de login -->
                             <ion-button
                                 type="submit"
                                 expand="block"
@@ -89,7 +90,7 @@
                                 />
 
                                 <span v-else>
-                                    Iniciar sesión
+                                    Ingresar
                                 </span>
 
                             </ion-button>
@@ -109,7 +110,7 @@
 
 <script setup lang="ts">
 
-import { computed, ref } from 'vue';
+import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import {
@@ -131,55 +132,52 @@ import {
 
 import { login } from '@/services/auth';
 import { ApiError } from '@/services/api';
-import { apiConfig } from '@/config/apiConfig';
 
 const router = useRouter();
 
-// Datos del formulario
-const identifier = ref('');
+// Datos del formulario.
+const email = ref('');
 const password = ref('');
 
-// Estados de la interfaz
-const loading = ref(false);
-const identifierError = ref('');
+// Estados de interfaz.
+const emailError = ref('');
 const passwordError = ref('');
 const errorMessage = ref('');
+const loading = ref(false);
 
-// Configurar el campo según la API
-const identifierLabel = computed(() =>
-    apiConfig.identifierField === 'email'
-        ? 'Correo electrónico'
-        : 'Usuario'
-);
-
-const identifierType = computed(() =>
-    apiConfig.identifierField === 'email'
-        ? 'email'
-        : 'text'
-);
-
-// Procesar el inicio de sesión
+// Procesar inicio de sesión.
 async function handleLogin(): Promise<void> {
 
-    identifierError.value = '';
+    // Limpiar mensajes anteriores.
+    emailError.value = '';
     passwordError.value = '';
     errorMessage.value = '';
 
-    const loginId = identifier.value.trim();
+    const emailValue = email.value.trim();
 
-    // Validaciones del formulario
-    if (!loginId) {
-        identifierError.value =
-            `${identifierLabel.value} es obligatorio.`;
+    // Validar correo.
+    if (!emailValue) {
+
+        emailError.value =
+            'El correo es obligatorio.';
+
+    } else if (
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue)
+    ) {
+
+        emailError.value =
+            'Ingresa un correo válido.';
     }
 
+    // Validar contraseña.
     if (!password.value) {
+
         passwordError.value =
             'La contraseña es obligatoria.';
     }
 
     if (
-        identifierError.value ||
+        emailError.value ||
         passwordError.value
     ) {
         return;
@@ -189,40 +187,40 @@ async function handleLogin(): Promise<void> {
 
     try {
 
-        await login(loginId, password.value);
+        // Autenticar con Laravel.
+        await login(
+            emailValue,
+            password.value
+        );
 
-        // Limpiar contraseña después de autenticarse
+        // Limpiar contraseña.
         password.value = '';
 
-        // Reemplazar el login en el historial
+        // Abrir listado sin regresar al login.
         await router.replace('/vehiculos');
 
-    } catch (error: unknown) {
+    } catch (error) {
 
         if (error instanceof ApiError) {
 
-            if (error.status === 401) {
+            // Laravel devuelve 422 cuando
+            // las credenciales son incorrectas.
+            if (error.status === 422) {
 
-                errorMessage.value =
-                    'Usuario o contraseña incorrectos.';
-
-            } else {
-
-                // Errores de validación devueltos por la API
-                identifierError.value =
-                    error.fieldErrors[
-                        apiConfig.identifierField
-                    ]?.[0] ?? '';
+                emailError.value =
+                    error.fieldErrors.email?.[0] ?? '';
 
                 passwordError.value =
                     error.fieldErrors.password?.[0] ?? '';
+            }
 
-                if (
-                    !identifierError.value &&
-                    !passwordError.value
-                ) {
-                    errorMessage.value = error.message;
-                }
+            // Otros errores HTTP.
+            if (
+                !emailError.value &&
+                !passwordError.value
+            ) {
+
+                errorMessage.value = error.message;
             }
 
         } else {
@@ -263,11 +261,6 @@ ion-card {
 
 .login-button {
     margin-top: 24px;
-}
-
-ion-spinner {
-    width: 22px;
-    height: 22px;
 }
 
 </style>

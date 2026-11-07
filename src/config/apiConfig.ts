@@ -1,19 +1,16 @@
 
 export const apiConfig = {
 
-    // Dirección base de la API
+    // Dirección principal del backend Laravel.
     baseUrl: (
         import.meta.env.VITE_API_BASE_URL || '/api'
     ).replace(/\/+$/, ''),
 
-    // Endpoint para iniciar sesión
-    loginPath:
-        import.meta.env.VITE_API_LOGIN_PATH || '/auth/login',
+    // Endpoints reales de autenticación.
+    loginPath: '/login',
 
-    // Campo utilizado para identificar al usuario
-    identifierField:
-        import.meta.env.VITE_API_LOGIN_FIELD === 'email'
-            ? 'email'
-            : 'username'
+    userPath: '/user',
+
+    logoutPath: '/logout'
 
 } as const;

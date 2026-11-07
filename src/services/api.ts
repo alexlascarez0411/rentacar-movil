@@ -11,9 +11,10 @@ export interface ApiRequestOptions {
     headers?: HeadersInit;
     signal?: AbortSignal;
     auth?: boolean;
+    skipUnauthorizedHandler?: boolean;
 }
 
-// Error personalizado para las solicitudes HTTP.
+// Error personalizado para respuestas HTTP.
 export class ApiError extends Error {
 
     constructor(
@@ -25,7 +26,7 @@ export class ApiError extends Error {
         this.name = 'ApiError';
     }
 
-    // Obtiene los errores de validación por campo (422).
+    // Errores de validación de Laravel (422).
     get fieldErrors(): Record<string, string[]> {
 
         const result: Record<string, string[]> = {};
@@ -34,21 +35,28 @@ export class ApiError extends Error {
             return result;
         }
 
-        const response = this.data as Record<string, unknown>;
-        const errors = response.errors;
+        const errors =
+            (this.data as Record<string, unknown>).errors;
 
-        if (!errors || typeof errors !== 'object') {
+        if (
+            !errors ||
+            typeof errors !== 'object' ||
+            Array.isArray(errors)
+        ) {
             return result;
         }
 
         for (const [field, value] of Object.entries(errors)) {
 
             if (Array.isArray(value)) {
+
                 result[field] = value.filter(
-                    (item): item is string =>
-                        typeof item === 'string'
+                    (text): text is string =>
+                        typeof text === 'string'
                 );
+
             } else if (typeof value === 'string') {
+
                 result[field] = [value];
             }
         }
@@ -57,44 +65,10 @@ export class ApiError extends Error {
     }
 }
 
-// Mensajes de error según el código HTTP.
-function getErrorMessage(
-    status: number,
-    data: unknown
-): string {
+// Función que ejecutará auth.ts cuando haya un 401.
+let unauthorizedHandler:
+    (() => Promise<void>) | null = null;
 
-    if (data && typeof data === 'object') {
-
-        const response = data as Record<string, unknown>;
-
-        if (typeof response.message === 'string') {
-            return response.message;
-        }
-    }
-
-    switch (status) {
-        case 401:
-            return 'La sesión ha expirado o las credenciales son incorrectas.';
-
-        case 403:
-            return 'No tienes permiso para realizar esta operación.';
-
-        case 404:
-            return 'No se encontró el recurso solicitado.';
-
-        case 422:
-            return 'Verifica los datos ingresados.';
-
-        default:
-            return status >= 500
-                ? 'Ocurrió un error en el servidor.'
-                : `Error en la solicitud (${status}).`;
-    }
-}
-
-// Permite que auth.ts gestione el cierre de sesión
-// sin importar directamente el router.
-let unauthorizedHandler: (() => Promise<void>) | null = null;
 let unauthorizedPromise: Promise<void> | null = null;
 
 export function setUnauthorizedHandler(
@@ -103,7 +77,8 @@ export function setUnauthorizedHandler(
     unauthorizedHandler = handler;
 }
 
-async function handleUnauthorized(): Promise<void> {
+// Evitar procesar varias veces el mismo cierre de sesión.
+async function notifyUnauthorized(): Promise<void> {
 
     if (!unauthorizedHandler) {
         return;
@@ -126,7 +101,7 @@ async function handleUnauthorized(): Promise<void> {
     return unauthorizedPromise;
 }
 
-// Solo permite rutas relativas a la API configurada.
+// Construir la URL completa del endpoint.
 function buildUrl(endpoint: string): string {
 
     if (
@@ -134,37 +109,84 @@ function buildUrl(endpoint: string): string {
         endpoint.startsWith('//') ||
         endpoint.includes('\\')
     ) {
-        throw new Error('La ruta de API no es válida.');
+        throw new Error('La ruta de la API no es válida.');
     }
 
     return `${apiConfig.baseUrl}${endpoint}`;
 }
 
-// Convierte la respuesta a JSON o texto.
-async function readResponse(
-    response: Response
-): Promise<unknown> {
-
-    if (response.status === 204 || response.status === 205) {
-        return null;
-    }
-
-    const contentType =
-        response.headers.get('content-type') || '';
+// Leer el contenido de la respuesta.
+async function readBody(response: Response): Promise<unknown> {
 
     if (
-        contentType.includes('application/json') ||
-        contentType.includes('+json')
+        response.status === 204 ||
+        response.status === 205
     ) {
-        return response.json();
+        return null;
     }
 
     const text = await response.text();
 
-    return text || null;
+    if (!text) {
+        return null;
+    }
+
+    if (response.headers.get('content-type')?.includes('json')) {
+
+        try {
+            return JSON.parse(text) as unknown;
+        } catch {
+            throw new ApiError(
+                response.status,
+                'El servidor devolvió JSON no válido.'
+            );
+        }
+    }
+
+    return text;
 }
 
-// Punto único de comunicación con la API.
+// Mensajes generales de error.
+function errorMessage(
+    status: number,
+    data: unknown
+): string {
+
+    if (data && typeof data === 'object') {
+
+        const message =
+            (data as Record<string, unknown>).message;
+
+        if (typeof message === 'string' && message) {
+            return message;
+        }
+    }
+
+    switch (status) {
+
+        case 401:
+            return 'Sesión expirada o inválida.';
+
+        case 403:
+            return 'No tienes permisos para esta operación.';
+
+        case 404:
+            return 'No se encontró el recurso.';
+
+        case 422:
+            return 'Revisa los datos ingresados.';
+
+        case 429:
+            return 'Demasiados intentos. Intenta más tarde.';
+
+        default:
+            return status >= 500
+                ? 'Error del servidor.'
+                : `Error HTTP ${status}.`;
+    }
+}
+
+// Función centralizada para todas las solicitudes.
 export async function apiRequest<T>(
     endpoint: string,
     options: ApiRequestOptions = {}
@@ -173,14 +195,18 @@ export async function apiRequest<T>(
     const {
         method = 'GET',
         body,
-        headers: extraHeaders,
+        headers: extras,
         signal,
-        auth = true
+        auth = true,
+        skipUnauthorizedHandler = false
     } = options;
 
-    const headers = new Headers(extraHeaders);
+    const headers = new Headers(extras);
 
     headers.set('Accept', 'application/json');
+
+    // El token se administra exclusivamente aquí.
+    headers.delete('Authorization');
 
     let requestBody: BodyInit | undefined;
 
@@ -189,26 +215,38 @@ export async function apiRequest<T>(
         if (body instanceof FormData) {
 
             requestBody = body;
+            headers.delete('Content-Type');
 
         } else {
 
             requestBody = JSON.stringify(body);
             headers.set('Content-Type', 'application/json');
-
         }
     }
 
-    // Evita que otra pantalla agregue un token manual.
-    headers.delete('Authorization');
+    let token: string | null = null;
 
-    // Intercepción automática del token.
+    // Adjuntar token automáticamente.
     if (auth) {
 
-        const token = await getAuthToken();
+        token = await getAuthToken();
 
-        if (token) {
-            headers.set('Authorization', `Bearer ${token}`);
+        if (!token) {
+
+            if (!skipUnauthorizedHandler) {
+                await notifyUnauthorized();
+            }
+
+            throw new ApiError(
+                401,
+                'No hay una sesión válida.'
+            );
         }
+
+        headers.set(
+            'Authorization',
+            `Bearer ${token}`
+        );
     }
 
     let response: Response;
@@ -233,40 +271,40 @@ export async function apiRequest<T>(
 
         throw new ApiError(
             0,
-            'No se pudo conectar con el servidor. Revisa la conexión.'
+            'No hay conexión con el servidor.'
         );
     }
 
-    // Se gestiona el 401 antes de leer el cuerpo:
-    // incluso si el JSON viene incorrecto, se cierra sesión.
-    if (response.status === 401 && auth) {
+    // Si Laravel rechaza el token, invalidar sesión.
+    if (
+        response.status === 401 &&
+        auth &&
+        !skipUnauthorizedHandler
+    ) {
 
-        try {
-            await handleUnauthorized();
-        } catch {
-            // El error HTTP original se informa igualmente.
+        const currentToken = await getAuthToken();
+
+        // No cerrar una sesión nueva por una petición vieja.
+        if (
+            currentToken === token ||
+            currentToken === null
+        ) {
+
+            try {
+                await notifyUnauthorized();
+            } catch {
+                // El error HTTP se informa igualmente.
+            }
         }
     }
 
-    let data: unknown;
-
-    try {
-
-        data = await readResponse(response);
-
-    } catch {
-
-        throw new ApiError(
-            response.status,
-            'El servidor devolvió una respuesta no válida.'
-        );
-    }
+    const data = await readBody(response);
 
     if (!response.ok) {
 
         throw new ApiError(
             response.status,
-            getErrorMessage(response.status, data),
+            errorMessage(response.status, data),
             data
         );
     }
@@ -274,13 +312,14 @@ export async function apiRequest<T>(
     return data as T;
 }
 
-// Métodos reutilizables para todas las pantallas.
+// Métodos públicos para los demás integrantes.
 export const api = {
 
     get<T>(
         endpoint: string,
         options: Omit<ApiRequestOptions, 'method' | 'body'> = {}
     ): Promise<T> {
+
         return apiRequest<T>(endpoint, {
             ...options,
             method: 'GET'
@@ -292,6 +331,7 @@ export const api = {
         body?: unknown,
         options: Omit<ApiRequestOptions, 'method' | 'body'> = {}
     ): Promise<T> {
+
         return apiRequest<T>(endpoint, {
             ...options,
             method: 'POST',
@@ -304,6 +344,7 @@ export const api = {
         body?: unknown,
         options: Omit<ApiRequestOptions, 'method' | 'body'> = {}
     ): Promise<T> {
+
         return apiRequest<T>(endpoint, {
             ...options,
             method: 'PUT',
@@ -316,6 +357,7 @@ export const api = {
         body?: unknown,
         options: Omit<ApiRequestOptions, 'method' | 'body'> = {}
     ): Promise<T> {
+
         return apiRequest<T>(endpoint, {
             ...options,
             method: 'PATCH',
@@ -327,10 +369,10 @@ export const api = {
         endpoint: string,
         options: Omit<ApiRequestOptions, 'method' | 'body'> = {}
     ): Promise<T> {
+
         return apiRequest<T>(endpoint, {
             ...options,
             method: 'DELETE'
         });
     }
 };
-

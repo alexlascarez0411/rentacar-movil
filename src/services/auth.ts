@@ -3,49 +3,158 @@ import { reactive, readonly } from 'vue';
 
 import { apiConfig } from '@/config/apiConfig';
 import {
-    apiRequest,
+    api,
     ApiError,
     setUnauthorizedHandler
 } from '@/services/api';
 import {
-    saveAuthToken,
     getAuthToken,
-    removeAuthToken
+    hasUnexpiredToken,
+    removeAuthToken,
+    saveAuthToken
 } from '@/services/secureStorage';
 
-// Estados posibles de la sesión.
+// Posibles estados de la sesión.
 export type SessionStatus =
-    'checking' | 'authenticated' | 'guest';
+    'checking' | 'authenticated' | 'offline' | 'guest';
 
-const state = reactive<{
+// Usuario devuelto por GET /api/user.
+export interface AuthUser {
+    id: number;
+    name: string;
+    email: string;
+    roles: string[];
+}
+
+interface SessionState {
     status: SessionStatus;
-}>({
-    status: 'checking'
+    user: AuthUser | null;
+}
+
+// Estado reactivo de autenticación.
+const state = reactive<SessionState>({
+    status: 'checking',
+    user: null
 });
 
-// Estado visible para otros componentes,
-// pero no modificable directamente.
 export const session = readonly(state);
 
 let restoring: Promise<boolean> | null = null;
 let loginPending = false;
 
-// Función de navegación que registrará el Integrante 1.
+// El router registrará aquí su redirección.
 let redirectToLogin:
     (() => Promise<unknown>) | null = null;
 
 export function setLoginRedirect(
     callback: () => Promise<unknown>
 ): void {
+
     redirectToLogin = callback;
 }
 
-// Indica si el usuario tiene una sesión activa.
+// Indica si existe una sesión reconocida.
+// En modo offline solo debe consultarse información en caché.
 export function isAuthenticated(): boolean {
-    return state.status === 'authenticated';
+
+    return (
+        state.status === 'authenticated' ||
+        state.status === 'offline'
+    ) && hasUnexpiredToken();
 }
 
-// Recuperar la sesión cuando se abre la aplicación.
+// Consultar los permisos del usuario.
+export function hasRole(role: string): boolean {
+
+    return state.status === 'authenticated' &&
+        (state.user?.roles.includes(role) ?? false);
+}
+
+// Comprobar nuevamente la sesión cuando regrese internet.
+export async function revalidateSession(): Promise<boolean> {
+
+    if (!isAuthenticated()) {
+        return false;
+    }
+
+    try {
+
+        state.user = await getAuthenticatedUser();
+        state.status = 'authenticated';
+
+        return true;
+
+    } catch (error) {
+
+        if (error instanceof ApiError && error.status === 0) {
+
+            state.status = 'offline';
+            return true;
+        }
+
+        if (error instanceof ApiError && error.status === 401) {
+            return false;
+        }
+
+        throw error;
+    }
+}
+
+// Consultar y validar el usuario real de Laravel.
+async function getAuthenticatedUser(): Promise<AuthUser> {
+
+    const response = await api.get<{ data: AuthUser }>(
+        apiConfig.userPath
+    );
+
+    const user = response?.data;
+
+    if (
+        !user ||
+        typeof user.id !== 'number' ||
+        typeof user.email !== 'string' ||
+        typeof user.name !== 'string' ||
+        !Array.isArray(user.roles) ||
+        !user.roles.every(
+            (role) => typeof role === 'string'
+        )
+    ) {
+
+        throw new Error(
+            'La API devolvió un usuario con formato inesperado.'
+        );
+    }
+
+    return user;
+}
+
+// Invalidar la sesión local.
+async function clearLocalSession(): Promise<void> {
+
+    const checking = state.status === 'checking';
+
+    state.status = 'guest';
+    state.user = null;
+
+    try {
+
+        await removeAuthToken();
+
+    } finally {
+
+        // Durante el arranque, el guardián
+        // de rutas administra la redirección.
+        if (!checking && redirectToLogin) {
+            await redirectToLogin();
+        }
+    }
+}
+
+// Ante 401, eliminar el token local.
+// No llamar /logout porque el token ya fue rechazado.
+setUnauthorizedHandler(clearLocalSession);
+
+// Recuperar sesión al abrir la aplicación.
 export async function restoreSession(): Promise<boolean> {
 
     if (state.status !== 'checking') {
@@ -62,18 +171,45 @@ export async function restoreSession(): Promise<boolean> {
 
             const token = await getAuthToken();
 
-            state.status = token
-                ? 'authenticated'
-                : 'guest';
+            if (!token) {
+
+                state.status = 'guest';
+                return false;
+            }
+
+            try {
+
+                // Verificar token contra el servidor.
+                state.user = await getAuthenticatedUser();
+
+                state.status = 'authenticated';
+
+                return true;
+
+            } catch (error) {
+
+                // Sin internet: permitir modo caché
+                // únicamente mientras el token local siga vigente.
+                if (
+                    error instanceof ApiError &&
+                    error.status === 0
+                ) {
+
+                    state.user = null;
+                    state.status = 'offline';
+
+                    return true;
+                }
+
+                state.status = 'guest';
+                return false;
+            }
 
         } catch {
 
-            // Si falla el almacenamiento seguro,
-            // no concedemos acceso privado.
             state.status = 'guest';
+            return false;
         }
-
-        return isAuthenticated();
 
     })();
 
@@ -87,84 +223,77 @@ export async function restoreSession(): Promise<boolean> {
     }
 }
 
-// Extrae el token de la respuesta de la API.
-function getTokenFromLoginResponse(
-    response: unknown
-): string | null {
-
-    if (!response || typeof response !== 'object') {
-        return null;
-    }
-
-    const data = response as Record<string, unknown>;
-
-    const nested =
-        data.data &&
-        typeof data.data === 'object' &&
-        !Array.isArray(data.data)
-            ? data.data as Record<string, unknown>
-            : {};
-
-    const token =
-        data.token ??
-        data.access_token ??
-        data.accessToken ??
-        nested.token ??
-        nested.access_token ??
-        nested.accessToken;
-
-    return typeof token === 'string' && token.trim()
-        ? token
-        : null;
-}
-
-// Iniciar sesión con las credenciales del usuario.
+// Iniciar sesión en Laravel.
 export async function login(
-    identifier: string,
+    email: string,
     password: string
 ): Promise<void> {
 
-    if (!identifier.trim() || !password) {
-        throw new Error('Debes ingresar usuario y contraseña.');
+    if (!email.trim() || !password) {
+
+        throw new Error(
+            'Ingresa correo y contraseña.'
+        );
     }
 
     if (loginPending) {
-        throw new Error('Ya se está iniciando sesión.');
+
+        throw new Error(
+            'Ya se está iniciando sesión.'
+        );
     }
 
     loginPending = true;
 
+    const startedAt = Date.now();
+
     try {
 
-        // El nombre del campo depende de la API real.
-        const credentials = {
-            [apiConfig.identifierField]: identifier.trim(),
-            password
-        };
-
-        const response = await apiRequest<unknown>(
+        // POST /api/login
+        const response = await api.post<{ token: string }>(
             apiConfig.loginPath,
             {
-                method: 'POST',
-                body: credentials,
+                email: email.trim(),
+                password
+            },
+            {
                 auth: false
             }
         );
 
-        const token = getTokenFromLoginResponse(response);
+        // Validar respuesta de Laravel Sanctum.
+        if (
+            !response ||
+            typeof response.token !== 'string' ||
+            !response.token.trim()
+        ) {
 
-        if (!token) {
-            throw new ApiError(
-                0,
-                'El servidor no devolvió un token de autenticación válido.'
+            throw new Error(
+                'La API no devolvió un token válido.'
             );
         }
 
-        // Solo se establece la sesión después
-        // de almacenar correctamente el token.
-        await saveAuthToken(token);
+        // Guardar el token de forma segura.
+        await saveAuthToken(
+            response.token,
+            startedAt
+        );
 
-        state.status = 'authenticated';
+        try {
+
+            // GET /api/user
+            // Obtener información y roles del usuario.
+            state.user = await getAuthenticatedUser();
+
+            state.status = 'authenticated';
+
+        } catch (error) {
+
+            // No dejar una sesión incompleta.
+            await clearLocalSession();
+
+            throw error;
+        }
 
     } finally {
 
@@ -172,24 +301,47 @@ export async function login(
     }
 }
 
-// Cerrar la sesión.
-export async function logout(): Promise<void> {
+// Resultado del cierre de sesión.
+export interface LogoutResult {
+    serverRevoked: boolean;
+}
 
-    // Invalidar el acceso inmediatamente.
-    state.status = 'guest';
+// Cerrar sesión en Laravel y Android.
+export async function logout(): Promise<LogoutResult> {
+
+    let serverRevoked = false;
 
     try {
 
-        await removeAuthToken();
+        // POST /api/logout
+        // Revocar el token actual en Laravel.
+        await api.post(
+            apiConfig.logoutPath,
+            undefined,
+            {
+                skipUnauthorizedHandler: true
+            }
+        );
+
+        serverRevoked = true;
+
+    } catch (error) {
+
+        // Un token rechazado con 401
+        // ya no es válido para el servidor.
+        if (
+            error instanceof ApiError &&
+            error.status === 401
+        ) {
+            serverRevoked = true;
+        }
 
     } finally {
 
-        // El Integrante 1 conecta esta función al router.
-        if (redirectToLogin) {
-            await redirectToLogin();
-        }
+        // Eliminar la sesión local incluso
+        // si el servidor está desconectado.
+        await clearLocalSession();
     }
-}
 
-// Manejo global del error 401.
-setUnauthorizedHandler(logout);
+    return { serverRevoked };
+}
