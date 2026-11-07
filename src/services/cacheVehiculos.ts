@@ -1,4 +1,7 @@
+import { watch } from 'vue';
+
 import { apiConfig } from '@/config/apiConfig';
+import { session } from '@/services/auth';
 import { getAuthToken } from '@/services/secureStorage';
 
 export interface VehiculoListado {
@@ -20,16 +23,38 @@ export interface CacheVehiculos extends PaginaVehiculos {
   actualizadoEn: number;
 }
 
+let claveSesion: string | null = null;
+let revisionSesion = 0;
+
+watch(
+  () => session.status,
+  (estado) => {
+    if (estado !== 'guest') return;
+
+    revisionSesion++;
+    eliminarCacheVehiculos(claveSesion);
+    claveSesion = null;
+  },
+  { flush: 'sync' },
+);
+
 export async function obtenerClaveCacheVehiculos(): Promise<string | null> {
   try {
+    const revision = revisionSesion;
     const token = await getAuthToken();
-    if (!token || !globalThis.crypto?.subtle) return null;
+    if (revision !== revisionSesion || session.status === 'guest' || !token || !globalThis.crypto?.subtle) return null;
 
     const servidor = new URL(apiConfig.baseUrl, globalThis.location.href).href;
     const datos = new TextEncoder().encode(JSON.stringify([servidor, token]));
     const huella = await globalThis.crypto.subtle.digest('SHA-256', datos);
     const identificador = Array.from(new Uint8Array(huella), (byte) => byte.toString(16).padStart(2, '0')).join('');
-    return `rentacar.vehiculos.v1.${identificador}`;
+    const clave = `rentacar.vehiculos.v1.${identificador}`;
+    if (revision !== revisionSesion) {
+      eliminarCacheVehiculos(clave);
+      return null;
+    }
+    claveSesion = clave;
+    return clave;
   } catch {
     return null;
   }

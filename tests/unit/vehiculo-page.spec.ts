@@ -257,4 +257,49 @@ describe('Listado de vehículos', () => {
     expect(localStorage.length).toBe(0);
     vista.unmount();
   });
+
+  it('borra solo la caché de la sesión que cierra, incluso al salir del listado', async () => {
+    get.mockResolvedValueOnce(pagina(1, [1])).mockResolvedValueOnce(pagina(1, [2]));
+    const primeraVista = montarListado();
+    await flushPromises();
+    primeraVista.unmount();
+    const claveOtraCuenta = localStorage.key(0)!;
+    const datosOtraCuenta = localStorage.getItem(claveOtraCuenta);
+
+    getAuthToken.mockResolvedValue('sesion-de-prueba-b');
+    Object.assign(session, { user: { id: 2 }, status: 'authenticated' });
+    const segundaVista = montarListado();
+    await flushPromises();
+    segundaVista.unmount();
+    expect(localStorage.length).toBe(2);
+
+    getAuthToken.mockResolvedValue(null);
+    Object.assign(session, { status: 'guest', user: null });
+
+    expect(localStorage.length).toBe(1);
+    expect(localStorage.getItem(claveOtraCuenta)).toBe(datosOtraCuenta);
+  });
+
+  it('conserva la caché al pasar a offline y la elimina al cerrar esa sesión', async () => {
+    get.mockResolvedValueOnce(pagina(1, [1]));
+    const vista = montarListado();
+    await flushPromises();
+    const clave = localStorage.key(0)!;
+    const datos = localStorage.getItem(clave);
+
+    Object.assign(session, { status: 'offline' });
+    cambiarConexion({ connected: false });
+    await flushPromises();
+
+    expect(localStorage.getItem(clave)).toBe(datos);
+    expect(vista.text()).toContain('ABC1');
+    expect(vista.text()).toContain('Información desactualizada');
+
+    getAuthToken.mockResolvedValue(null);
+    Object.assign(session, { status: 'guest', user: null });
+    await flushPromises();
+    expect(localStorage.getItem(clave)).toBeNull();
+    expect(vista.text()).not.toContain('ABC1');
+    vista.unmount();
+  });
 });
