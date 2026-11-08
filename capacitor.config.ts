@@ -1,9 +1,15 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'io.ionic.starter',
-  appName: 'rentacar-movil',
-  webDir: 'dist'
+  appId: 'com.grupo1.rentacar',
+  appName: 'RentaCar',
+  webDir: 'dist',
+
+  plugins: {
+    CapacitorHttp: {
+      enabled: true,
+    },
+  },
 };
 
 export default config;
