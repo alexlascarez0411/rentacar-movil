@@ -155,6 +155,9 @@
 
       </ion-card>
 
+      <!-- Capacidad nativa: ubicación actual del dispositivo -->
+      <UbicacionActual v-if="vehiculo" />
+
     </ion-content>
 
   </ion-page>
@@ -192,6 +195,7 @@ import {
 } from '@/services/vehiculos';
 
 import { ApiError } from '@/services/api';
+import UbicacionActual from '@/components/UbicacionActual.vue';
 
 // Recibir el ID desde /vehiculos/:id
 const props = defineProps<{
