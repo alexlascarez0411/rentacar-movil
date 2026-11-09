@@ -202,28 +202,6 @@
                   {{ errores.kilometraje }}
                 </ion-note>
 
-                <!-- Precio diario -->
-                <ion-item>
-                  <ion-input
-                    label="Precio diario (₡)"
-                    label-placement="stacked"
-                    type="number"
-                    inputmode="decimal"
-                    placeholder="Ejemplo: 25000"
-                    v-model="form.precio_diario"
-                    required
-                    @ionInput="limpiarError('precio_diario')"
-                  />
-                </ion-item>
-
-                <ion-note
-                  v-if="errores.precio_diario"
-                  color="danger"
-                  class="error-campo"
-                >
-                  {{ errores.precio_diario }}
-                </ion-note>
-
                 <!-- Categoría -->
                 <ion-item>
                   <ion-select
@@ -368,18 +346,18 @@ const form = reactive({
   modelo: '',
   anno: String(new Date().getFullYear()),
   kilometraje: '',
-  precio_diario: '',
   categoria_id: null as number | null
 });
 
 // Errores de validación
+// (Nota: Si TypeScript da error aquí, debes eliminar "precio_diario"
+// de la interfaz NuevoVehiculo en tu archivo @/services/vehiculos.ts)
 const errores = reactive<Record<keyof NuevoVehiculo, string>>({
   placa: '',
   marca: '',
   modelo: '',
   anno: '',
   kilometraje: '',
-  precio_diario: '',
   categoria_id: ''
 });
 
@@ -478,7 +456,6 @@ function validarFormulario(): boolean {
 
   const anno = Number(form.anno);
   const kilometraje = Number(form.kilometraje);
-  const precio = Number(form.precio_diario);
 
   const annoMaximo = new Date().getFullYear() + 1;
 
@@ -538,17 +515,6 @@ function validarFormulario(): boolean {
     valido = false;
   }
 
-  // Precio diario
-  if (
-    form.precio_diario === '' ||
-    !Number.isFinite(precio) ||
-    precio < 0
-  ) {
-    errores.precio_diario =
-      'Ingresa un precio diario válido.';
-    valido = false;
-  }
-
   // Categoría
   if (
     form.categoria_id === null ||
@@ -595,7 +561,6 @@ async function guardarVehiculo(): Promise<void> {
       modelo: form.modelo.trim(),
       anno: Number(form.anno),
       kilometraje: Number(form.kilometraje),
-      precio_diario: Number(form.precio_diario),
       categoria_id: Number(form.categoria_id)
     };
 

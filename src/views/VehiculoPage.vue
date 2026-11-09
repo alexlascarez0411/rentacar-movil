@@ -46,7 +46,6 @@
           <ion-label class="ion-text-wrap">
             <h2>{{ vehiculo.marca }} {{ vehiculo.modelo }}</h2>
             <p>Placa {{ vehiculo.placa }} · Año {{ vehiculo.anno }}</p>
-            <p>{{ formatoPrecio.format(vehiculo.precio_diario) }} por día</p>
             <p>Estado: {{ vehiculo.estado ?? 'Sin especificar' }}</p>
           </ion-label>
         </ion-item>
@@ -108,7 +107,6 @@ const paginaActual = ref(0);
 const ultimaPagina = ref(0);
 const cargando = ref(false);
 const fallo = ref<{ pagina: number; mensaje: string } | null>(null);
-const formatoPrecio = new Intl.NumberFormat('es-CR', { style: 'currency', currency: 'CRC' });
 const formatoFecha = new Intl.DateTimeFormat('es-CR', { dateStyle: 'medium', timeStyle: 'short' });
 const actualizadoEn = ref<number | null>(null);
 const motivoOffline = ref('');

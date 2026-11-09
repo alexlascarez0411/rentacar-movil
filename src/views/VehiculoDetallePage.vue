@@ -110,15 +110,6 @@
 
             <ion-item>
               <ion-label>
-                <h2>Precio diario</h2>
-                <p>
-                  {{ formatearPrecio(vehiculo.precio_diario) }}
-                </p>
-              </ion-label>
-            </ion-item>
-
-            <ion-item>
-              <ion-label>
                 <h2>Categoría</h2>
                 <p>
                   {{ vehiculo.categoria ?? 'No disponible' }}
@@ -207,7 +198,7 @@ const vehiculo = ref<Vehiculo | null>(null);
 const cargando = ref(false);
 const errorMensaje = ref('');
 
-// Evitar mostrar respuestas de una consulta anterior
+// Evitar mostrar respuestas de una anterior
 let consultaActual = 0;
 
 // Consultar vehículo en Laravel
@@ -285,16 +276,6 @@ async function cargarVehiculo(): Promise<void> {
 // Formatear números
 function formatearNumero(valor: number): string {
   return new Intl.NumberFormat('es-CR').format(valor);
-}
-
-// Formatear precio diario en colones
-function formatearPrecio(valor: number): string {
-
-  return new Intl.NumberFormat('es-CR', {
-    style: 'currency',
-    currency: 'CRC',
-    maximumFractionDigits: 2
-  }).format(valor);
 }
 
 // Cargar al abrir y cuando cambie el ID

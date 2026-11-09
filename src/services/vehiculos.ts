@@ -1,4 +1,3 @@
-
 import { api } from '@/services/api';
 
 // Datos de un vehículo
@@ -9,7 +8,6 @@ export interface Vehiculo {
   modelo: string;
   anno: number;
   kilometraje: number;
-  precio_diario: number;
   categoria_id: number;
   estado_id: number;
   categoria?: string | null;
@@ -41,7 +39,6 @@ export interface NuevoVehiculo {
   modelo: string;
   anno: number;
   kilometraje: number;
-  precio_diario: number;
   categoria_id: number;
 }
 
