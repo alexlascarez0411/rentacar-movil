@@ -1,7 +1,21 @@
 <template>
   <ion-page>
     <ion-header>
-      <ion-toolbar><ion-title>Vehículos</ion-title></ion-toolbar>
+      <ion-toolbar>
+        <ion-title>Vehículos</ion-title>
+        <ion-buttons slot="end">
+          <ion-button
+            v-if="puedeRegistrar"
+            router-link="/vehiculos/nuevo"
+            :disabled="cerrandoSesion"
+          >
+            Registrar
+          </ion-button>
+          <ion-button :disabled="cerrandoSesion" @click="cerrarSesion">
+            {{ cerrandoSesion ? 'Saliendo…' : 'Cerrar sesión' }}
+          </ion-button>
+        </ion-buttons>
+      </ion-toolbar>
     </ion-header>
     <ion-content class="ion-padding">
       <ion-refresher slot="fixed" @ionRefresh="recargar">
@@ -53,6 +67,7 @@
 <script setup lang="ts">
 import {
   IonButton,
+  IonButtons,
   IonContent,
   IonHeader,
   IonItem,
@@ -68,12 +83,12 @@ import {
   onIonViewWillLeave,
 } from '@ionic/vue';
 import type { RefresherCustomEvent } from '@ionic/vue';
-import { onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
 import { api, ApiError } from '@/services/api';
 
 import { useNetwork } from '@/composables/useNetwork';
-import { isAuthenticated, session } from '@/services/auth';
+import { hasRole, isAuthenticated, logout, session } from '@/services/auth';
 import {
   eliminarCacheVehiculos,
   guardarCacheVehiculos,
@@ -92,6 +107,10 @@ const formatoFecha = new Intl.DateTimeFormat('es-CR', { dateStyle: 'medium', tim
 const actualizadoEn = ref<number | null>(null);
 const motivoOffline = ref('');
 const conectado = ref<boolean>();
+const cerrandoSesion = ref(false);
+const puedeRegistrar = computed(() =>
+  hasRole('Admin_General') || hasRole('Admin_Inventarios'),
+);
 let visible = false;
 let claveMostrada: string | null = null;
 let solicitudActiva: AbortController | undefined;
@@ -207,6 +226,17 @@ async function recargar(evento: RefresherCustomEvent) {
     await cargarPagina(1);
   } finally {
     await evento.target.complete();
+  }
+}
+
+async function cerrarSesion(): Promise<void> {
+  if (cerrandoSesion.value) return;
+
+  cerrandoSesion.value = true;
+  try {
+    await logout();
+  } finally {
+    cerrandoSesion.value = false;
   }
 }
 
