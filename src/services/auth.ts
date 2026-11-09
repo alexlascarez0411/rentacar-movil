@@ -73,7 +73,12 @@ export function hasRole(role: string): boolean {
 // Comprobar nuevamente la sesión cuando regrese internet.
 export async function revalidateSession(): Promise<boolean> {
 
-    if (!isAuthenticated()) {
+     if (!isAuthenticated()) {
+
+        if (state.status === 'offline') {
+            await clearLocalSession();
+        }
+
         return false;
     }
 

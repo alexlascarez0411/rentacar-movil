@@ -88,7 +88,13 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { api, ApiError } from '@/services/api';
 
 import { useNetwork } from '@/composables/useNetwork';
-import { hasRole, isAuthenticated, logout, session } from '@/services/auth';
+import {
+  hasRole,
+  isAuthenticated,
+  logout,
+  revalidateSession,
+  session
+} from '@/services/auth';
 import {
   eliminarCacheVehiculos,
   guardarCacheVehiculos,
@@ -241,8 +247,34 @@ async function cerrarSesion(): Promise<void> {
 }
 
 const red = useNetwork((estado) => {
+
   conectado.value = estado;
-  void cargarPagina(1);
+
+  void (async () => {
+
+    if (!visible) return;
+
+    // Restaurar usuario y roles al recuperar Internet.
+    if (
+      estado === true &&
+      session.status === 'offline'
+    ) {
+
+      try {
+        await revalidateSession();
+      } catch {
+        // La recarga del listado mostrará
+        // el error de conexión si corresponde.
+      }
+    }
+
+    // Actualizar los vehículos.
+    if (visible) {
+      await cargarPagina(1);
+    }
+
+  })();
+
 });
 
 watch(
