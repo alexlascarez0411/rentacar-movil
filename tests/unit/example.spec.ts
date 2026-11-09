@@ -1,11 +1,11 @@
-import { mount } from '@vue/test-utils';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import Tab1Page from '@/views/Tab1Page.vue';
+import { apiConfig } from '@/config/apiConfig';
 
-describe('Tab1Page.vue', () => {
-  test('renders tab 1 Tab1Page', () => {
-    const wrapper = mount(Tab1Page);
-    expect(wrapper.text()).toMatch('Tab 1 page');
+describe('Configuración base de la app móvil', () => {
+  it('define las rutas de autenticación de la API', () => {
+    expect(apiConfig.loginPath).toBe('/login');
+    expect(apiConfig.userPath).toBe('/user');
+    expect(apiConfig.logoutPath).toBe('/logout');
   });
 });

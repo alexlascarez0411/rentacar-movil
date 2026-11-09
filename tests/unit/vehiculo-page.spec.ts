@@ -6,19 +6,25 @@ import { ApiError } from '@/services/api';
 import { session } from '@/services/auth';
 import VehiculoPage from '@/views/VehiculoPage.vue';
 
-const { get, getStatus, addListener, remove, getAuthToken } = vi.hoisted(() => ({
+const { get, getStatus, addListener, remove, getAuthToken, logout } = vi.hoisted(() => ({
   get: vi.fn(),
   getStatus: vi.fn(),
   addListener: vi.fn(),
   remove: vi.fn(),
   getAuthToken: vi.fn(),
+  logout: vi.fn(),
 }));
 vi.mock('@capacitor/network', () => ({ Network: { getStatus, addListener } }));
 vi.mock('@/services/secureStorage', () => ({ getAuthToken }));
 vi.mock('@/services/auth', async () => {
   const { reactive } = await import('vue');
   const session = reactive({ user: { id: 1 } as { id: number } | null, status: 'authenticated' });
-  return { session, isAuthenticated: () => session.status !== 'guest' };
+  return {
+    session,
+    isAuthenticated: () => session.status !== 'guest',
+    hasRole: () => session.status === 'authenticated',
+    logout,
+  };
 });
 vi.mock('@/services/api', () => ({
   api: { get },
@@ -70,9 +76,15 @@ function montarListado() {
         IonItem: true,
         IonLabel: true,
         IonButton: true,
+        IonButtons: true,
       },
     },
   });
+}
+function botonPorTexto(vista: ReturnType<typeof montarListado>, texto: string) {
+  const boton = vista.findAllComponents({ name: 'IonButton' }).find((componente) => componente.text().includes(texto));
+  if (!boton) throw new Error(`No se encontró el botón: ${texto}`);
+  return boton;
 }
 
 describe('Listado de vehículos', () => {
@@ -109,7 +121,7 @@ describe('Listado de vehículos', () => {
       new Intl.NumberFormat('es-CR', { style: 'currency', currency: 'CRC' }).format(20000),
     );
     expect(vista.getComponent({ name: 'IonItem' }).props('routerLink')).toBe('/vehiculos/1');
-    await vista.getComponent({ name: 'IonButton' }).trigger('click');
+    await botonPorTexto(vista, 'Cargar más').trigger('click');
     await flushPromises();
 
     expect(get.mock.calls.map(([ruta]) => ruta)).toEqual(['/vehiculos?page=1&limit=10', '/vehiculos?page=2&limit=10']);
@@ -126,12 +138,12 @@ describe('Listado de vehículos', () => {
     const vista = montarListado();
     await flushPromises();
 
-    await vista.getComponent({ name: 'IonButton' }).trigger('click');
+    await botonPorTexto(vista, 'Cargar más').trigger('click');
     await flushPromises();
     expect(vista.get('[role="alert"]').text()).toContain('Servidor no disponible');
     expect(vista.text()).toContain('ABC1');
 
-    await vista.getComponent({ name: 'IonButton' }).trigger('click');
+    await botonPorTexto(vista, 'Reintentar').trigger('click');
     await flushPromises();
     expect(get.mock.calls[2]?.[0]).toBe('/vehiculos?page=2&limit=10');
     expect(vista.text()).toContain('ABC2');
@@ -153,7 +165,7 @@ describe('Listado de vehículos', () => {
     expect(complete).toHaveBeenCalledOnce();
     expect(vista.get('[role="alert"]').text()).toContain('Falló la recarga');
     expect(vista.text()).toContain('ABC1');
-    await vista.getComponent({ name: 'IonButton' }).trigger('click');
+    await botonPorTexto(vista, 'Reintentar').trigger('click');
     await flushPromises();
 
     expect(get.mock.calls[2]?.[0]).toBe('/vehiculos?page=1&limit=10');
@@ -174,7 +186,7 @@ describe('Listado de vehículos', () => {
     const vista = montarListado();
     await flushPromises();
 
-    await vista.getComponent({ name: 'IonButton' }).trigger('click');
+    await botonPorTexto(vista, 'Cargar más').trigger('click');
     const complete = vi.fn();
     vista.getComponent({ name: 'IonRefresher' }).vm.$emit('ionRefresh', { target: { complete } });
     await flushPromises();
@@ -250,7 +262,7 @@ describe('Listado de vehículos', () => {
     expect(vista.text()).toContain('ABC1');
     expect(vista.text()).not.toContain('Dispositivo sin conexión');
 
-    await vista.getComponent({ name: 'IonButton' }).trigger('click');
+    await botonPorTexto(vista, 'Reintentar').trigger('click');
     await flushPromises();
     expect(vista.get('[role="alert"]').text()).toContain('Sin permisos');
     expect(vista.text()).not.toContain('ABC1');
