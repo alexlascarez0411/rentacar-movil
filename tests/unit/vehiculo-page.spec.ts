@@ -6,23 +6,27 @@ import { ApiError } from '@/services/api';
 import { session } from '@/services/auth';
 import VehiculoPage from '@/views/VehiculoPage.vue';
 
-const { get, getStatus, addListener, remove, getAuthToken, logout } = vi.hoisted(() => ({
+const { get, getStatus, addListener, remove, getAuthToken, hasUnexpiredToken, logout } = vi.hoisted(() => ({
   get: vi.fn(),
   getStatus: vi.fn(),
   addListener: vi.fn(),
   remove: vi.fn(),
   getAuthToken: vi.fn(),
+  hasUnexpiredToken: vi.fn(),
   logout: vi.fn(),
 }));
 vi.mock('@capacitor/network', () => ({ Network: { getStatus, addListener } }));
 vi.mock('@/services/secureStorage', () => ({ getAuthToken }));
 vi.mock('@/services/auth', async () => {
   const { reactive } = await import('vue');
-  const session = reactive({ user: { id: 1 } as { id: number } | null, status: 'authenticated' });
+  const session = reactive({
+    user: { id: 1, roles: ['Cliente'] } as { id: number; roles: string[] } | null,
+    status: 'authenticated',
+  });
   return {
     session,
-    isAuthenticated: () => session.status !== 'guest',
-    hasRole: () => session.status === 'authenticated',
+    isAuthenticated: () => ['authenticated', 'offline'].includes(session.status) && hasUnexpiredToken(),
+    hasRole: (role: string) => session.status === 'authenticated' && (session.user?.roles.includes(role) ?? false),
     logout,
   };
 });
@@ -93,7 +97,8 @@ describe('Listado de vehículos', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     localStorage.clear();
-    Object.assign(session, { user: { id: 1 }, status: 'authenticated' });
+    Object.assign(session, { user: { id: 1, roles: ['Cliente'] }, status: 'authenticated' });
+    hasUnexpiredToken.mockReturnValue(true);
     getAuthToken.mockResolvedValue('sesion-de-prueba-a');
     getStatus.mockResolvedValue({ connected: true });
     addListener.mockImplementation((_evento, callback) => {
@@ -108,6 +113,42 @@ describe('Listado de vehículos', () => {
   });
 
   afterEach(() => vi.unstubAllGlobals());
+
+  it.each(['Admin_General', 'Admin_Inventarios'])('muestra Registrar para %s', async (rol) => {
+    Object.assign(session, { user: { id: 1, roles: [rol] } });
+    get.mockResolvedValueOnce(pagina(1, []));
+    const vista = montarListado();
+    await flushPromises();
+
+    expect(botonPorTexto(vista, 'Registrar').props('routerLink')).toBe('/vehiculos/nuevo');
+    vista.unmount();
+  });
+
+  it.each(['Cliente', 'Gestor_Rentas'])('oculta Registrar para %s', async (rol) => {
+    Object.assign(session, { user: { id: 1, roles: [rol] } });
+    get.mockResolvedValueOnce(pagina(1, []));
+    const vista = montarListado();
+    await flushPromises();
+
+    expect(vista.text()).not.toContain('Registrar');
+    vista.unmount();
+  });
+
+  it('oculta Registrar cuando un administrador pasa a offline', async () => {
+    Object.assign(session, { user: { id: 1, roles: ['Admin_General'] } });
+    get.mockResolvedValueOnce(pagina(1, [1]));
+    const vista = montarListado();
+    await flushPromises();
+    expect(botonPorTexto(vista, 'Registrar').exists()).toBe(true);
+
+    Object.assign(session, { status: 'offline' });
+    cambiarConexion({ connected: false });
+    await flushPromises();
+
+    expect(vista.text()).not.toContain('Registrar');
+    expect(vista.text()).toContain('ABC1');
+    vista.unmount();
+  });
 
   it('muestra los datos, enlaza al detalle y pagina sin duplicados', async () => {
     get.mockResolvedValueOnce(pagina(1, [1])).mockResolvedValueOnce(pagina(2, [1, 2, 2]));
@@ -210,7 +251,9 @@ describe('Listado de vehículos', () => {
     await flushPromises();
     expect(vista.text()).toContain('Dispositivo sin conexión');
     expect(vista.text()).toContain('Información desactualizada');
-    expect(vista.text()).toContain('Última actualización');
+    const { actualizadoEn } = JSON.parse(localStorage.getItem(localStorage.key(0)!)!);
+    const fecha = new Intl.DateTimeFormat('es-CR', { dateStyle: 'medium', timeStyle: 'short' });
+    expect(vista.text()).toContain(`Última actualización: ${fecha.format(actualizadoEn)}.`);
     expect(vista.text()).toContain('ABC1');
     expect(vista.text()).not.toContain('Cargar más');
 
@@ -239,7 +282,7 @@ describe('Listado de vehículos', () => {
     expect(get).toHaveBeenCalledOnce();
 
     getAuthToken.mockResolvedValue('sesion-de-prueba-b');
-    Object.assign(session, { user: { id: 2 }, status: 'authenticated' });
+    Object.assign(session, { user: { id: 2, roles: ['Cliente'] }, status: 'authenticated' });
     await flushPromises();
     expect(vistaOffline.text()).not.toContain('ABC1');
     expect(vistaOffline.text()).toContain('No hay información disponible sin conexión');
@@ -270,6 +313,51 @@ describe('Listado de vehículos', () => {
     vista.unmount();
   });
 
+  it('retira los datos privados ante 401 sin restaurar la caché', async () => {
+    get.mockResolvedValueOnce(pagina(1, [1])).mockImplementationOnce(() => {
+      getAuthToken.mockResolvedValue(null);
+      hasUnexpiredToken.mockReturnValue(false);
+      Object.assign(session, { status: 'guest', user: null });
+      return Promise.reject(new ApiError(401, 'Sesión expirada'));
+    });
+    const vista = montarListado();
+    await flushPromises();
+    expect(vista.text()).toContain('ABC1');
+    expect(localStorage.length).toBe(1);
+
+    const complete = vi.fn();
+    vista.getComponent({ name: 'IonRefresher' }).vm.$emit('ionRefresh', { target: { complete } });
+    await flushPromises();
+    cambiarConexion({ connected: false });
+    cambiarConexion({ connected: true });
+    await flushPromises();
+
+    expect(complete).toHaveBeenCalledOnce();
+    expect(vista.text()).not.toContain('ABC1');
+    expect(localStorage.length).toBe(0);
+    expect(get).toHaveBeenCalledTimes(2);
+    vista.unmount();
+  });
+
+  it('no restaura la caché offline con una sesión vencida', async () => {
+    get.mockResolvedValueOnce(pagina(1, [1]));
+    const primeraVista = montarListado();
+    await flushPromises();
+    primeraVista.unmount();
+    expect(localStorage.length).toBe(1);
+
+    Object.assign(session, { status: 'offline', user: null });
+    hasUnexpiredToken.mockReturnValue(false);
+    getAuthToken.mockResolvedValue(null);
+    getStatus.mockResolvedValue({ connected: false });
+    const vista = montarListado();
+    await flushPromises();
+
+    expect(vista.text()).not.toContain('ABC1');
+    expect(get).toHaveBeenCalledOnce();
+    vista.unmount();
+  });
+
   it('borra solo la caché de la sesión que cierra, incluso al salir del listado', async () => {
     get.mockResolvedValueOnce(pagina(1, [1])).mockResolvedValueOnce(pagina(1, [2]));
     const primeraVista = montarListado();
@@ -279,7 +367,7 @@ describe('Listado de vehículos', () => {
     const datosOtraCuenta = localStorage.getItem(claveOtraCuenta);
 
     getAuthToken.mockResolvedValue('sesion-de-prueba-b');
-    Object.assign(session, { user: { id: 2 }, status: 'authenticated' });
+    Object.assign(session, { user: { id: 2, roles: ['Cliente'] }, status: 'authenticated' });
     const segundaVista = montarListado();
     await flushPromises();
     segundaVista.unmount();
