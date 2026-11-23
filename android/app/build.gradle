@@ -1,5 +1,21 @@
 apply plugin: 'com.android.application'
 
+def releaseKeystorePath = System.getenv("RENTACAR_KEYSTORE_PATH")
+def releaseKeystorePassword = System.getenv("RENTACAR_KEYSTORE_PASSWORD")
+def releaseKeyAlias = System.getenv("RENTACAR_KEY_ALIAS")
+def releaseKeyPassword = System.getenv("RENTACAR_KEY_PASSWORD")
+
+def releaseSigningConfigured = [
+        releaseKeystorePath,
+        releaseKeystorePassword,
+        releaseKeyAlias,
+        releaseKeyPassword
+].every { value -> value != null && !value.trim().isEmpty() }
+
+def releaseRequested = gradle.startParameter.taskNames.any {
+    taskName -> taskName.toLowerCase().contains("release")
+}
+
 android {
     namespace = "com.grupo1.rentacar"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -16,8 +32,30 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+
+    signingConfigs {
+        release {
+            if (releaseSigningConfigured) {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseKeystorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (!releaseSigningConfigured && releaseRequested) {
+                throw new GradleException(
+                    "Faltan variables de entorno RENTACAR_* para firmar el APK release."
+                )
+            }
+
+            if (releaseSigningConfigured) {
+                signingConfig signingConfigs.release
+            }
+
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
@@ -41,7 +79,6 @@ dependencies {
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
 }
-
 apply from: 'capacitor.build.gradle'
 
 try {
