@@ -16,7 +16,6 @@ $RECYCLE.BIN/
 *.log
 log.txt
 npm-debug.log*
-
 /.idea
 /.ionic
 /.sass-cache
@@ -30,7 +29,21 @@ npm-debug.log*
 /platforms
 /plugins
 /www
-/.env
+
+# Variables locales y de producción: no subir valores reales.
+.env
+.env.*
+!.env.example
+!.env.development.example
+!.env.production.example
+
+# Firma Android: nunca subir keystore ni credenciales.
+/*.jks
+/*.keystore
+/android/*.jks
+/android/*.keystore
+/android/app/*.jks
+/android/app/*.keystore
 
 # Playwright
 /test-results/
